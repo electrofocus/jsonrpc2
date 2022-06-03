@@ -23,15 +23,17 @@ func (r *Router) Handle(method string, handler Handler) {
 	r.handlers[method] = handler
 }
 
-func (r *Router) handle(ctx context.Context, payload []byte) []byte {
-	dec := json.NewDecoder(bytes.NewReader(payload))
+func (r *Router) Serve(ctx context.Context, msg []byte) []byte {
+	dec := json.NewDecoder(bytes.NewReader(msg))
 
 	tok, err := dec.Token()
 	if err != nil {
 		return errParse
 	}
 
-	if delim, ok := tok.(json.Delim); ok && delim == json.Delim('[') {
+	if delim, ok := tok.(json.Delim); ok && delim == json.Delim('{') {
+		return r.single(ctx, msg)
+	} else if ok && delim == json.Delim('[') {
 		var b batch
 
 		if err := dec.Decode(&b); err != nil {
@@ -41,13 +43,13 @@ func (r *Router) handle(ctx context.Context, payload []byte) []byte {
 		return r.batch(ctx, b)
 	}
 
-	return r.single(ctx, payload)
+	return errParse
 }
 
-func (r *Router) single(ctx context.Context, payload []byte) []byte {
+func (r *Router) single(ctx context.Context, msg []byte) []byte {
 	var req request
 
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg, &req); err != nil {
 		var e requestError
 
 		if errors.As(err, &e) {
@@ -62,7 +64,7 @@ func (r *Router) single(ctx context.Context, payload []byte) []byte {
 		return errMethodNotFound(req.ID)
 	}
 
-	result, err := handler(ctx, req.ID, req.Method, req.Params)
+	res, err := handler(ctx, req.ID, req.Method, req.Params)
 	if err != nil {
 		var e Error
 
@@ -73,11 +75,11 @@ func (r *Router) single(ctx context.Context, payload []byte) []byte {
 		return errInternal(req.ID)
 	}
 
-	return encodeResult(req.ID, result)
+	return encodeResult(req.ID, res)
 }
 
 func (r *Router) batch(ctx context.Context, b batch) []byte {
-	resp := make([][]byte, 0, len(b))
+	res := make([][]byte, 0, len(b))
 
 	var (
 		mu sync.Mutex
@@ -89,7 +91,7 @@ func (r *Router) batch(ctx context.Context, b batch) []byte {
 	for _, payload := range b {
 		go func(p []byte, mu *sync.Mutex, wg *sync.WaitGroup) {
 			mu.Lock()
-			resp = append(resp, r.single(ctx, p))
+			res = append(res, r.single(ctx, p))
 			mu.Unlock()
 			wg.Done()
 		}(payload, &mu, &wg)
@@ -97,39 +99,7 @@ func (r *Router) batch(ctx context.Context, b batch) []byte {
 
 	wg.Wait()
 
-	return encodeBatch(resp)
-}
-
-var errParse = []byte(`{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null}`)
-
-func errInternal(id ID) []byte {
-	result, _ := json.Marshal(errResponse{
-		JSONRPC: "2.0",
-		Error:   Error{1000, "Internal error"},
-		ID:      id,
-	})
-
-	return result
-}
-
-func errMethodNotFound(id ID) []byte {
-	result, _ := json.Marshal(errResponse{
-		JSONRPC: "2.0",
-		Error:   Error{-32601, "Method not found"},
-		ID:      id,
-	})
-
-	return result
-}
-
-func errInvalidRequest(id ID) []byte {
-	result, _ := json.Marshal(errResponse{
-		JSONRPC: "2.0",
-		Error:   Error{-32600, "Invalid Request"},
-		ID:      id,
-	})
-
-	return result
+	return encodeBatch(res)
 }
 
 func encodeErr(id ID, err Error) []byte {
@@ -142,10 +112,10 @@ func encodeErr(id ID, err Error) []byte {
 	return result
 }
 
-func encodeResult(id ID, result []byte) []byte {
+func encodeResult(id ID, res []byte) []byte {
 	raw, _ := json.Marshal(response{
 		JSONRPC: "2.0",
-		Result:  result,
+		Result:  res,
 		ID:      id,
 	})
 
