@@ -1,11 +1,12 @@
 package jsonrpc2
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strings"
+	"sync"
 )
 
 type Handler func(ctx context.Context, id ID, method string, params []byte) (result []byte, err error)
@@ -22,32 +23,141 @@ func (r *Router) Handle(method string, handler Handler) {
 	r.handlers[method] = handler
 }
 
-func (r *Router) ServeHTTP(w http.ResponseWriter, httpRequest *http.Request) {
+func (r *Router) handle(ctx context.Context, payload []byte) []byte {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+
+	tok, err := dec.Token()
+	if err != nil {
+		return errParse
+	}
+
+	if delim, ok := tok.(json.Delim); ok && delim == json.Delim('[') {
+		var b batch
+
+		if err := dec.Decode(&b); err != nil {
+			return errParse
+		}
+
+		return r.batch(ctx, b)
+	}
+
+	return r.single(ctx, payload)
+}
+
+func (r *Router) single(ctx context.Context, payload []byte) []byte {
 	var req request
 
-	decoder := json.NewDecoder(httpRequest.Body)
-	decoder.UseNumber()
-
-	if err := decoder.Decode(&req); err != nil {
+	if err := json.Unmarshal(payload, &req); err != nil {
 		var e requestError
 
 		if errors.As(err, &e) {
-			_ = json.NewEncoder(w).Encode(errResponse{
-				JSONRPC: "2.0",
-				Error:   ErrInvalidRequest,
-				ID:      req.ID,
-			})
-
-			return
+			return errInvalidRequest(req.ID)
 		}
 
-		_ = json.NewEncoder(w).Encode(errResponse{
-			JSONRPC: "2.0",
-			Error:   ErrParse,
-			ID:      Null,
-		})
+		return errParse
 	}
+
+	handler, ok := r.handlers[req.Method]
+	if !ok {
+		return errMethodNotFound(req.ID)
+	}
+
+	result, err := handler(ctx, req.ID, req.Method, req.Params)
+	if err != nil {
+		var e Error
+
+		if errors.As(err, &e) {
+			return encodeErr(req.ID, e)
+		}
+
+		return errInternal(req.ID)
+	}
+
+	return encodeResult(req.ID, result)
 }
+
+func (r *Router) batch(ctx context.Context, b batch) []byte {
+	resp := make([][]byte, 0, len(b))
+
+	var (
+		mu sync.Mutex
+		wg sync.WaitGroup
+	)
+
+	wg.Add(len(b))
+
+	for _, payload := range b {
+		go func(p []byte, mu *sync.Mutex, wg *sync.WaitGroup) {
+			mu.Lock()
+			resp = append(resp, r.single(ctx, p))
+			mu.Unlock()
+			wg.Done()
+		}(payload, &mu, &wg)
+	}
+
+	wg.Wait()
+
+	return encodeBatch(resp)
+}
+
+var errParse = []byte(`{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null}`)
+
+func errInternal(id ID) []byte {
+	result, _ := json.Marshal(errResponse{
+		JSONRPC: "2.0",
+		Error:   Error{1000, "Internal error"},
+		ID:      id,
+	})
+
+	return result
+}
+
+func errMethodNotFound(id ID) []byte {
+	result, _ := json.Marshal(errResponse{
+		JSONRPC: "2.0",
+		Error:   Error{-32601, "Method not found"},
+		ID:      id,
+	})
+
+	return result
+}
+
+func errInvalidRequest(id ID) []byte {
+	result, _ := json.Marshal(errResponse{
+		JSONRPC: "2.0",
+		Error:   Error{-32600, "Invalid Request"},
+		ID:      id,
+	})
+
+	return result
+}
+
+func encodeErr(id ID, err Error) []byte {
+	result, _ := json.Marshal(errResponse{
+		JSONRPC: "2.0",
+		Error:   err,
+		ID:      id,
+	})
+
+	return result
+}
+
+func encodeResult(id ID, result []byte) []byte {
+	raw, _ := json.Marshal(response{
+		JSONRPC: "2.0",
+		Result:  result,
+		ID:      id,
+	})
+
+	return raw
+}
+
+func encodeBatch(b [][]byte) []byte {
+	result, _ := json.Marshal(b)
+	return result
+}
+
+type batch []json.RawMessage
 
 type request struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -56,7 +166,7 @@ type request struct {
 	Params  json.RawMessage `json:"params"`
 }
 
-func (r *request) UnmarshalJSON(data []byte) error {
+func (i *request) UnmarshalJSON(data []byte) error {
 	var payload struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      ID              `json:"id"`
@@ -76,13 +186,20 @@ func (r *request) UnmarshalJSON(data []byte) error {
 		return requestError("'method' MUST NOT begin with 'rpc.'")
 	}
 
+	*i = request{
+		JSONRPC: payload.JSONRPC,
+		ID:      payload.ID,
+		Method:  payload.Method,
+		Params:  payload.Params,
+	}
+
 	return nil
 }
 
 type requestError string
 
 func (e requestError) Error() string {
-
+	return string(e)
 }
 
 type response struct {
