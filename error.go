@@ -16,7 +16,7 @@ var errParse = []byte(`{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse 
 func errInternal(id ID) []byte {
 	result, _ := json.Marshal(errResponse{
 		JSONRPC: "2.0",
-		Error:   Error{1000, "Internal error"},
+		Error:   Error{-32603, "Internal error"},
 		ID:      id,
 	})
 

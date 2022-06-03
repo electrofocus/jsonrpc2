@@ -32,7 +32,7 @@ func (r *Router) Serve(ctx context.Context, msg []byte) []byte {
 	}
 
 	if delim, ok := tok.(json.Delim); ok && delim == json.Delim('{') {
-		return r.single(ctx, msg)
+		return r.serve(ctx, msg)
 	} else if ok && delim == json.Delim('[') {
 		var b batch
 
@@ -40,13 +40,13 @@ func (r *Router) Serve(ctx context.Context, msg []byte) []byte {
 			return errParse
 		}
 
-		return r.batch(ctx, b)
+		return r.serveBatch(ctx, b)
 	}
 
 	return errParse
 }
 
-func (r *Router) single(ctx context.Context, msg []byte) []byte {
+func (r *Router) serve(ctx context.Context, msg []byte) []byte {
 	var req request
 
 	if err := json.Unmarshal(msg, &req); err != nil {
@@ -78,8 +78,8 @@ func (r *Router) single(ctx context.Context, msg []byte) []byte {
 	return encodeResult(req.ID, res)
 }
 
-func (r *Router) batch(ctx context.Context, b batch) []byte {
-	res := make([][]byte, 0, len(b))
+func (r *Router) serveBatch(ctx context.Context, b batch) []byte {
+	res := make(batch, 0, len(b))
 
 	var (
 		mu sync.Mutex
@@ -91,7 +91,7 @@ func (r *Router) batch(ctx context.Context, b batch) []byte {
 	for _, payload := range b {
 		go func(p []byte, mu *sync.Mutex, wg *sync.WaitGroup) {
 			mu.Lock()
-			res = append(res, r.single(ctx, p))
+			res = append(res, r.serve(ctx, p))
 			mu.Unlock()
 			wg.Done()
 		}(payload, &mu, &wg)
@@ -100,16 +100,6 @@ func (r *Router) batch(ctx context.Context, b batch) []byte {
 	wg.Wait()
 
 	return encodeBatch(res)
-}
-
-func encodeErr(id ID, err Error) []byte {
-	result, _ := json.Marshal(errResponse{
-		JSONRPC: "2.0",
-		Error:   err,
-		ID:      id,
-	})
-
-	return result
 }
 
 func encodeResult(id ID, res []byte) []byte {
@@ -122,8 +112,18 @@ func encodeResult(id ID, res []byte) []byte {
 	return raw
 }
 
-func encodeBatch(b [][]byte) []byte {
+func encodeBatch(b batch) []byte {
 	result, _ := json.Marshal(b)
+	return result
+}
+
+func encodeErr(id ID, err Error) []byte {
+	result, _ := json.Marshal(errResponse{
+		JSONRPC: "2.0",
+		Error:   err,
+		ID:      id,
+	})
+
 	return result
 }
 
