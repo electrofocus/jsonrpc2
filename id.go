@@ -40,6 +40,29 @@ func (id ID) MarshalJSON() ([]byte, error) {
 	return id, nil
 }
 
+func (id ID) String() string {
+	if id.IsNull() {
+		return ""
+	}
+
+	if id == nil {
+		return ""
+	}
+
+	var str string
+
+	if err := json.Unmarshal(id, &str); err == nil {
+		return str
+	}
+
+	num, ok := id.number()
+	if !ok {
+		return ""
+	}
+
+	return num.String()
+}
+
 func (id ID) IsSet() bool {
 	return id != nil
 }
@@ -74,29 +97,6 @@ func (id ID) Float64() (float64, bool) {
 	}
 
 	return f, true
-}
-
-func (id ID) String() (string, bool) {
-	if id.IsNull() {
-		return "", false
-	}
-
-	if id == nil {
-		return "", false
-	}
-
-	var str string
-
-	if err := json.Unmarshal(id, &str); err == nil {
-		return str, true
-	}
-
-	num, ok := id.number()
-	if !ok {
-		return "", false
-	}
-
-	return num.String(), true
 }
 
 func (id ID) number() (json.Number, bool) {

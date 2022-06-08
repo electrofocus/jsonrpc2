@@ -15,6 +15,12 @@ type Router struct {
 	handlers map[string]Handler
 }
 
+func NewRouter() Router {
+	return Router{
+		handlers: make(map[string]Handler),
+	}
+}
+
 func (r *Router) Handle(method string, handler Handler) {
 	if r.handlers == nil {
 		r.handlers = make(map[string]Handler)
@@ -149,10 +155,20 @@ func (i *request) UnmarshalJSON(data []byte) error {
 	}
 
 	if payload.JSONRPC != "2.0" {
+
+		*i = request{
+			ID: payload.ID,
+		}
+
 		return requestError("'jsonrpc' MUST be exactly '2.0'")
 	}
 
 	if strings.HasPrefix(payload.Method, "rpc.") {
+
+		*i = request{
+			ID: payload.ID,
+		}
+
 		return requestError("'method' MUST NOT begin with 'rpc.'")
 	}
 
@@ -174,7 +190,7 @@ func (e requestError) Error() string {
 
 type response struct {
 	JSONRPC string          `json:"jsonrpc"`
-	Result  json.RawMessage `json:"result"`
+	Result  json.RawMessage `json:"result,omitempty"`
 	ID      ID              `json:"id"`
 }
 
