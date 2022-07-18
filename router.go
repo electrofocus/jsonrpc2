@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 )
@@ -52,7 +54,7 @@ func (r *Router) Serve(ctx context.Context, msg []byte) []byte {
 	return errParse
 }
 
-func (r *Router) serve(ctx context.Context, msg []byte) []byte {
+func (r *Router) serve(ctx context.Context, msg []byte) (res []byte) {
 	var req request
 
 	if err := json.Unmarshal(msg, &req); err != nil {
@@ -64,6 +66,17 @@ func (r *Router) serve(ctx context.Context, msg []byte) []byte {
 
 		return errParse
 	}
+
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Printf("panic: %s\n%s", err, string(debug.Stack()))
+
+			res = encodeErr(req.ID, Error{
+				Code:    0, // TODO: fill code
+				Message: fmt.Sprint(err),
+			})
+		}
+	}()
 
 	handler, ok := r.handlers[req.Method]
 	if !ok {
